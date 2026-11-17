@@ -86,7 +86,7 @@ function stopPopup(stop) {
   fetchLiveMany(tuaId).then(arr => {
     if (!arr.length) { body.textContent = 'No buses on their way right now.'; return; }
     body.className = 'popup-body';
-    body.innerHTML = `<ul class="popup-live">${arr.sort((a, b) => a.seconds - b.seconds).map(a => `<li><span class="chip" style="background:${lineColor(a.line)}">${esc(a.line)}</span> ${esc(a.destino)} <span class="live">${mins(a.seconds)} min</span></li>`).join('')}</ul><div class="sched">TUA stop ${esc(tuaLabel(tuaId))}</div>`;
+    body.innerHTML = `<ul class="popup-live">${arr.sort((a, b) => (a.fetchedAt + a.seconds) - (b.fetchedAt + b.seconds)).map(a => `<li><span class="chip" style="background:${lineColor(a.line)}">${esc(a.line)}</span> ${esc(a.destino)} <span class="live">${mins(a.fetchedAt + a.seconds - madridNow().secs)} min</span></li>`).join('')}</ul><div class="sched">TUA stop ${esc(tuaLabel(tuaId))}</div>`;
   }).catch(err => { body.textContent = `Live times unavailable: ${err.message}`; });
   return el;
 }
@@ -139,8 +139,11 @@ async function fetchLive(tuaId) {
     try {
       const r = await fetch(LIVE_SOURCES[idx] + encodeURIComponent(tuaId), { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const fetchedAt = madridNow().secs;
-      const data = parseEstimaciones(await r.json()).map(a => ({ ...a, fetchedAt }));
+      const body = await r.json();
+      // The relay may hand back an answer a little old; count the countdowns from when TUA gave it.
+      const ageS = body.fetchedAt ? Math.max(0, (Date.now() - body.fetchedAt) / 1000) : 0;
+      const fetchedAt = madridNow().secs - ageS;
+      const data = parseEstimaciones(body).map(a => ({ ...a, fetchedAt }));
       liveSourceIdx = idx;
       liveCache.set(tuaId, { at: Date.now(), data });
       return data;
