@@ -299,11 +299,11 @@ async function search() {
   state.results = itineraries.map(it => ({ it, live: null }));
   state.when = when;
   if (!itineraries.length) {
-    status(walkOnly.meters < 2500 ? `No useful bus found. Walking takes about ${mins(walkOnly.seconds)} min (${dist(walkOnly.meters)}).` : 'No bus trip found for that time.', !itineraries.length && walkOnly.meters >= 2500);
+    status(walkOnly.meters < 2500 ? `No bus found for this trip. Walking takes about ${mins(walkOnly.seconds)} min (${dist(walkOnly.meters)}).` : 'No bus trip found for that time.', !itineraries.length && walkOnly.meters >= 2500);
     $('#results').innerHTML = '';
     return;
   }
-  status(walkOnly.meters < 1500 ? `Walking the whole way takes about ${mins(walkOnly.seconds)} min.` : '');
+  status(walkOnly.meters < 2500 ? `Or walk the whole way: about ${mins(walkOnly.seconds)} min (${dist(walkOnly.meters)}).` : '');
   renderResults();
   setPanel('expanded');
   if (when.live) refreshLive();

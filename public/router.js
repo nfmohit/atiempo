@@ -82,7 +82,8 @@ export class Network {
     rounds.push(r0);
     const results = [];
     const directM = Math.round(haversine(origin.lat, origin.lon, dest.lat, dest.lon) * WALK_DETOUR);
-    let bestDest = depart + walkSeconds(directM / WALK_DETOUR);
+    // Buses are shown even when walking is quicker; the app shows the walking time next to them.
+    let bestDest = Infinity;
 
     for (let k = 1; k <= maxRounds && marked.size; k++) {
       const prev = rounds[k - 1];

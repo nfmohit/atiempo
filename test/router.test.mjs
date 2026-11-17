@@ -29,3 +29,8 @@ assert.equal(live.length, 2);
 assert.equal(live[0].dir, 'F1');
 assert.deepEqual(liveForLeg({ line: 'F', headsign: 'F1-CAMPILLIN-HUCA' }, live).map(a => a.seconds), [294]);
 console.log('ok');
+
+// Short trip (about 1.2 km): bus options must still be offered even if walking is quicker.
+const r3 = net.plan({ lat: 43.3623, lon: -5.8467 }, { lat: 43.3700, lon: -5.8370 }, 13 * 3600 + 40 * 60, '20261117');
+assert(r3.itineraries.length > 0, 'short trips should still offer buses');
+console.log('short trip:', r3.walkOnly.meters, 'm walk;', r3.itineraries.length, 'bus options');
