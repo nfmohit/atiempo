@@ -69,23 +69,51 @@ def align(tua, gtfs, names):
     return pairs[::-1]
 
 
+GOOD = 0.6
+
+
+def accept(pairs, tua, gtfs):
+    """Which aligned pairs to trust: good name matches, plus runs of weak matches that sit at the
+    same positions in both lists between good matches or at either end (e.g. "F. L. C." =
+    "Fundación Laboral Construcción", or "Las Campas II" = "Les Campes 2")."""
+    ti = {id(t): k for k, t in enumerate(tua)}
+    gi = {g: k for k, g in enumerate(gtfs)}
+    ok = [sc >= GOOD for _, _, sc in pairs]
+    k = 0
+    while k < len(pairs):
+        if ok[k]:
+            k += 1
+            continue
+        e = k
+        while e < len(pairs) and not ok[e]:
+            e += 1
+        # Run of weak pairs [k, e). Check it is contiguous with its neighbours in both lists.
+        def contiguous(a, b):
+            return ti[id(pairs[b][0])] - ti[id(pairs[a][0])] == b - a and gi[pairs[b][1]] - gi[pairs[a][1]] == b - a
+        lo_ok = k == 0 and ti[id(pairs[0][0])] == 0 and gi[pairs[0][1]] == 0 or k > 0 and contiguous(k - 1, k)
+        hi_ok = e == len(pairs) and ti[id(pairs[-1][0])] == len(tua) - 1 and gi[pairs[-1][1]] == len(gtfs) - 1 or e < len(pairs) and contiguous(e - 1, e)
+        inner = all(contiguous(x, x + 1) for x in range(k, e - 1))
+        if lo_ok and hi_ok and inner and (k > 0 or e < len(pairs)) and e - k <= 3:
+            for x in range(k, e):
+                ok[x] = True
+        k = e
+    return ok
+
+
 def main(data_path, out_path, pages):
     data = json.load(open(data_path, encoding="utf-8"))
     names = {s[0]: s[1] for s in data["stops"]}
     stop_ids = [s[0] for s in data["stops"]]
-    # Longest timetable pattern for each direction code (A1, F2, BUHO...).
-    by_dir = {}
+    # Every distinct timetable stop sequence per line letter; each TUA direction is aligned
+    # against all of them and the best one wins (handles variants, loops and odd headsigns).
+    by_line = {}
     for p in data["patterns"]:
-        code = re.match(r"^([A-Z]+\d?)", p["headsign"].upper()).group(1)
-        code = "BUHO" + ("1" if "CUATRO" not in p["headsign"].upper() else "2") if code.startswith("BUHO") else code
         seq = [stop_ids[i] for i in p["stops"]]
-        if len(seq) > len(by_dir.get(code, [])):
-            by_dir[code] = seq
+        line = "BUHO" if p["line"].upper().startswith("BU") else p["line"].upper()
+        if seq not in by_line.setdefault(line, []):
+            by_line[line].append(seq)
 
-    try:
-        mapping = json.load(open(out_path, encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        mapping = {}
+    mapping = {}
     report = []
     sources = []
     for path in pages:
@@ -97,31 +125,32 @@ def main(data_path, out_path, pages):
             sources.append(text)
     for src in sources:
         for code, tua in (src if isinstance(src, dict) else parse_line_page(src)).items():
-            gtfs = by_dir.get(code)
-            if not gtfs:
-                report.append(f"{code}: no timetable direction found")
+            line = re.match(r"^([A-Z]+?)\d*$", code).group(1)
+            cands = by_line.get(line, [])
+            if not cands:
+                report.append(f"{code}: no timetable line found")
                 continue
-            pairs = align(tua, gtfs, names)
-            # Accept a weak name match when it sits between two good matches in both lists
-            # (e.g. "F. L. C." = "Fundación Laboral Construcción").
-            ti = {id(t): k for k, t in enumerate(tua)}
-            gi = {g: k for k, g in enumerate(gtfs)}
-            ok = [s >= 0.6 for _, _, s in pairs]
-            for k, (t, g, s) in enumerate(pairs):
-                if not ok[k] and 0 < k < len(pairs) - 1 and ok[k - 1] and ok[k + 1]:
-                    pt, pg, _ = pairs[k - 1]; nt, ng, _ = pairs[k + 1]
-                    if ti[id(pt)] + 1 == ti[id(t)] == ti[id(nt)] - 1 and gi[pg] + 1 == gi[g] == gi[ng] - 1:
-                        ok[k] = "sandwich"
-            good = [(t, g) for (t, g, _), o in zip(pairs, ok) if o]
-            for (num, _), g in good:
-                mapping[g] = num
-            report.append(f"{code}: {len(good)}/{len(tua)} TUA stops matched ({len(gtfs)} in timetable)")
-            for (t, g, s), o in zip(pairs, ok):
+            best = None
+            for gtfs in cands:
+                pairs = align(tua, gtfs, names)
+                ok = accept(pairs, tua, gtfs)
+                if best is None or sum(map(bool, ok)) > best[0]:
+                    best = (sum(map(bool, ok)), pairs, ok, gtfs)
+            n_ok, pairs, ok, gtfs = best
+            for (t, g, _), o in zip(pairs, ok):
+                if o:
+                    mapping.setdefault(g, set()).add(t[0])
+            report.append(f"{code}: {n_ok}/{len(tua)} TUA stops matched ({len(gtfs)} in timetable)")
+            for (t, g, sc), o in zip(pairs, ok):
                 if not o:
-                    report.append(f"   weak: TUA {t[0]} '{t[1]}' ~ timetable {g} '{names[g]}' ({s:.2f})")
-    json.dump(dict(sorted(mapping.items(), key=lambda kv: int(kv[0]))), open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+                    report.append(f"   unmatched: TUA {t[0]} '{t[1]}' (closest: timetable {g} '{names[g]}', {sc:.2f})")
+    # One timetable stop can stand for more than one TUA stop (e.g. HUCA1/HUCA2 share one stop).
+    out = {g: (sorted(v)[0] if len(v) == 1 else sorted(v)) for g, v in sorted(mapping.items(), key=lambda kv: int(kv[0]))}
+    json.dump(out, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
     print("\n".join(report))
-    print(f"{len(mapping)} of {len(stop_ids)} timetable stops now have a TUA number -> {out_path}")
+    multi = {g: v for g, v in out.items() if isinstance(v, list)}
+    print(f"{len(out)} of {len(stop_ids)} timetable stops now have a TUA number; {len(multi)} have several: " +
+          ", ".join(f"{g} {names[g]} -> {v}" for g, v in list(multi.items())[:15]))
 
 
 if __name__ == "__main__":

@@ -24,10 +24,10 @@ It works in a phone browser (and can be added to the home screen). No app store 
 ## Known gaps
 
 - **TUA stop numbers.** TUA's live API uses its own stop numbers (like 5019), which differ from
-  the timetable's stop ids. `public/data/stop-map.json` maps one to the other. It's built by
-  `scripts/match_stops.py`, which aligns TUA's per-line stop lists with the timetable by order
-  and name. So far only line A is matched. To collect every line, run
-  `tools/collect-tua-stops.js` in a browser console on tua.es (instructions in the file), then
+  the timetable's stop ids. `public/data/stop-map.json` maps one to the other (543 of 555 stops,
+  all 17 lines). It's built by `scripts/match_stops.py`, which aligns TUA's per-line stop lists
+  with the timetable by order and name. To refresh it, run `tools/collect-tua-stops.js` in a
+  browser console on tua.es (instructions in the file), then
   `python3 scripts/match_stops.py public/data/tua.json public/data/stop-map.json tua-stops.json`.
   For any stop still missing, the app asks for its TUA number once and remembers it.
 - **TUA's bot shield.** tua.es sits behind Imperva/Incapsula, which blocks requests from cloud

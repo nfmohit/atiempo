@@ -74,23 +74,35 @@ function stopPopup(stop) {
   const lines = [...new Set(net.stopPatterns[stop.i].map(([pi]) => net.patterns[pi].line))].sort();
   el.innerHTML = `<strong>${esc(stop.name)}</strong><div>${lines.map(l => `<span class="chip" style="background:${lineColor(l)}">${esc(l)}</span>`).join(' ')}</div><div class="popup-body sched">Loading live times…</div>`;
   const body = el.querySelector('.popup-body');
-  const tuaId = tuaStopId(stop);
-  if (!tuaId) {
+  const tuaId = tuaStopIds(stop);
+  if (!tuaId.length) {
     body.innerHTML = '';
     body.appendChild(stopNumberEditor(stop, () => map.closePopup()));
     return el;
   }
-  fetchLive(tuaId).then(arr => {
+  fetchLiveMany(tuaId).then(arr => {
     if (!arr.length) { body.textContent = 'No buses on their way right now.'; return; }
     body.className = 'popup-body';
-    body.innerHTML = `<ul class="popup-live">${arr.sort((a, b) => a.seconds - b.seconds).map(a => `<li><span class="chip" style="background:${lineColor(a.line)}">${esc(a.line)}</span> ${esc(a.destino)} <span class="live">${mins(a.seconds)} min</span></li>`).join('')}</ul><div class="sched">TUA stop ${esc(tuaId)}</div>`;
+    body.innerHTML = `<ul class="popup-live">${arr.sort((a, b) => a.seconds - b.seconds).map(a => `<li><span class="chip" style="background:${lineColor(a.line)}">${esc(a.line)}</span> ${esc(a.destino)} <span class="live">${mins(a.seconds)} min</span></li>`).join('')}</ul><div class="sched">TUA stop ${esc(tuaLabel(tuaId))}</div>`;
   }).catch(err => { body.textContent = `Live times unavailable: ${err.message}`; });
   return el;
 }
 
 // ---------- TUA stop numbers ----------
 // The timetable's stop ids differ from TUA's own stop numbers, so we keep a mapping.
-function tuaStopId(stop) { return userStopMap[stop.id] || stopMap[stop.id] || null; }
+// A timetable stop can stand for several TUA stops (e.g. HUCA1 and HUCA2), so this returns a list.
+function tuaStopIds(stop) {
+  const v = userStopMap[stop.id] || stopMap[stop.id];
+  return v ? [].concat(v).map(String) : [];
+}
+const tuaLabel = ids => ids.join(' / ');
+
+async function fetchLiveMany(ids) {
+  const lists = await Promise.allSettled(ids.map(fetchLive));
+  const ok = lists.filter(r => r.status === 'fulfilled');
+  if (!ok.length) throw lists[0].reason;
+  return ok.flatMap(r => r.value);
+}
 
 function stopNumberEditor(stop, onSaved) {
   const box = document.createElement('div');
@@ -124,9 +136,10 @@ async function fetchLive(tuaId) {
     try {
       const r = await fetch(LIVE_SOURCES[idx] + encodeURIComponent(tuaId), { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = parseEstimaciones(await r.json());
+      const fetchedAt = madridNow().secs;
+      const data = parseEstimaciones(await r.json()).map(a => ({ ...a, fetchedAt }));
       liveSourceIdx = idx;
-      liveCache.set(tuaId, { at: Date.now(), data, fetchedAt: madridNow().secs });
+      liveCache.set(tuaId, { at: Date.now(), data });
       return data;
     } catch (e) { lastErr = e; }
   }
@@ -145,23 +158,25 @@ async function applyLive(it, now) {
   for (const leg of it.legs) {
     if (leg.type !== 'bus') { result.legs.push(null); continue; }
     const stop = net.stops[leg.from.stop];
-    const tuaId = tuaStopId(stop);
-    const info = { scheduled: leg.depart, live: null, tuaId };
-    if (tuaId && leg.depart - now.secs < 3 * 3600) {
+    const tuaId = tuaStopIds(stop);
+    const info = { scheduled: leg.depart, live: null, tuaId: tuaId.length ? tuaId : null };
+    if (tuaId.length && leg.depart - now.secs < 3 * 3600) {
       try {
-        const arr = liveForLeg(leg, await fetchLive(tuaId));
-        const fetched = liveCache.get(tuaId)?.fetchedAt ?? now.secs;
-        const cands = arr.map(a => ({ ...a, at: fetched + a.seconds }));
+        const arr = liveForLeg(leg, await fetchLiveMany(tuaId));
+        const cands = arr.map(a => ({ ...a, at: a.fetchedAt + a.seconds }));
         const earliest = first ? now.secs : ready;
-        const catchable = cands.filter(c => c.at >= earliest - 30);
-        if (catchable.length) {
-          // The live bus closest to our scheduled bus; if the live list starts later, take its first.
-          catchable.sort((a, b) => Math.abs(a.at - leg.depart) - Math.abs(b.at - leg.depart));
-          const pick = catchable[0];
-          // Only trust a match within 25 minutes of the timetable; otherwise it's probably another trip.
-          if (Math.abs(pick.at - leg.depart) <= 25 * 60) info.live = pick;
-        } else if (cands.length) {
-          info.missed = true;
+        // Work out which timetabled trip each live bus is. Buses run late more often than early,
+        // so being early counts double. A live bus is ours only if our trip is its best match.
+        const sched = net.scheduledAt(leg.pattern, leg.boardPos, now.date, now.secs - 3600, now.secs + 3 * 3600);
+        const tripOf = c => {
+          let best = null, bestCost = Infinity;
+          for (const s of sched) { const d = c.at - s.t, cost = d >= 0 ? d : -2 * d; if (cost < bestCost) { bestCost = cost; best = s.trip; } }
+          return best;
+        };
+        const mine = cands.filter(c => tripOf(c) === leg.trip);
+        if (mine.length) {
+          info.live = mine[0];
+          if (info.live.at < earliest - 30) { info.missed = true; info.live = null; }
         }
       } catch (e) { info.error = e.message; }
     }
@@ -301,6 +316,15 @@ async function refreshLive() {
   await Promise.all(state.results.map(async r => { r.live = await applyLive(r.it, now); }));
   // Re-rank by live arrival.
   state.results.sort((a, b) => (a.live?.arrive ?? a.it.arrive) - (b.live?.arrive ?? b.it.arrive));
+  // If a bus is running late, it can replace an earlier option entirely; show only real choices.
+  const seenOpt = new Set();
+  state.results = state.results.filter(r => {
+    if (r.live?.legs.some(l => l?.missed)) return false;
+    const k = `${r.it.key}|${r.live?.leaveBy ?? r.it.depart}`;
+    if (seenOpt.has(k)) return false;
+    seenOpt.add(k);
+    return true;
+  });
   renderResults();
   if (state.selected >= 0 && !$('#detail').hidden) renderDetail(state.selected);
 }
@@ -326,8 +350,7 @@ function renderResults() {
     if (firstBus?.live) {
       const d = Math.round((firstBus.depart - firstBus.scheduled) / 60);
       liveTxt = ` · <span class="live">live</span> ${d === 0 ? 'on time' : d > 0 ? `<span class="late">${d} min late</span>` : `${-d} min early`}`;
-    } else if (state.when.live && firstBus && !firstBus.tuaId) liveTxt = ' · <span class="sched">timetable only</span>';
-    else if (firstBus?.missed) liveTxt = ' · <span class="late">this bus may have gone</span>';
+    } else if (state.when.live && firstBus) liveTxt = ' · <span class="sched">timetable time</span>';
     return `<li data-i="${i}" class="${i === state.selected ? 'selected' : ''}">
       <div class="it-top"><span class="it-times">${hhmm(dep)} → ${hhmm(arr)}</span><span class="it-dur">${mins(arr - dep)} min</span></div>
       <div class="it-legs">${legChips(it)}</div>
@@ -410,7 +433,7 @@ async function renderDetail(i) {
   // Stop-number editors for boarding stops without a TUA number.
   box.querySelectorAll('[data-stopno]').forEach(el => {
     const stop = net.stops[+el.dataset.stopno];
-    if (tuaStopId(stop)) { el.innerHTML = `<div class="stopno sub">TUA stop ${esc(tuaStopId(stop))}</div>`; return; }
+    if (tuaStopIds(stop).length) { el.innerHTML = `<div class="stopno sub">TUA stop ${esc(tuaLabel(tuaStopIds(stop)))}</div>`; return; }
     if (state.when.live) el.appendChild(stopNumberEditor(stop));
   });
 
