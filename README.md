@@ -37,7 +37,12 @@ It works in a phone browser (and can be added to the home screen). No app store 
 - **Timetable coverage.** The current extract covers 16 Nov to 31 Dec 2026. Re-run the data
   script with a newer feed to extend it.
 
-## Run it
+## Use it
+
+Online: https://nfmohit.github.io/atiempo/ (published from `public/` by GitHub Actions on every push to `main`).
+On GitHub Pages there is no relay server, so live times come straight from TUA in your browser.
+
+## Run it locally
 
 ```sh
 node server.js          # http://localhost:8080
