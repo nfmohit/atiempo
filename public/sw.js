@@ -1,5 +1,5 @@
 // Network first, falling back to cache, so the app opens offline with the last timetable.
-const CACHE = 'ovibus-v1';
+const CACHE = 'atiempo-v1';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {

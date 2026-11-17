@@ -29,7 +29,7 @@ function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); 
 
 // ---------- State ----------
 let net, stopMap = {};
-const userStopMap = storage('ovibus.stopMap', {});
+const userStopMap = storage('atiempo.stopMap', {});
 const state = { from: null, to: null, results: [], selected: -1 };
 
 // ---------- Map ----------
@@ -116,7 +116,7 @@ function stopNumberEditor(stop, onSaved) {
     const v = input.value.trim();
     if (v && !/^\d{1,6}$/.test(v)) { input.setCustomValidity('Numbers only'); input.reportValidity(); return; }
     if (v) userStopMap[stop.id] = v; else delete userStopMap[stop.id];
-    save('ovibus.stopMap', userStopMap);
+    save('atiempo.stopMap', userStopMap);
     onSaved?.();
     refreshLive();
   });
@@ -481,7 +481,7 @@ $('#grip').addEventListener('click', () => setPanel($('#panel').classList.contai
     ]);
     net = new Network(data);
     stopMap = sm;
-    window.ovibus = { net, state }; // handy for debugging
+    window.atiempo = { net, state }; // handy for debugging
     drawStops();
     status('');
     locate(false);

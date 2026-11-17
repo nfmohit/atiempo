@@ -1,4 +1,4 @@
-// Ovibus server: serves the web app and relays TUA live arrivals.
+// ATiempo server: serves the web app and relays TUA live arrivals.
 // No dependencies. Run: node server.js  (PORT defaults to 8080)
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -17,7 +17,7 @@ async function live(stopId, res) {
   const hit = cache.get(stopId);
   if (hit && Date.now() - hit.at < CACHE_MS) return send(res, 200, hit.body);
   try {
-    const r = await fetch(TUA_BASE + stopId, { headers: { accept: 'application/json', 'user-agent': 'Ovibus/0.1 (trip planner prototype)' }, signal: AbortSignal.timeout(8000) });
+    const r = await fetch(TUA_BASE + stopId, { headers: { accept: 'application/json', 'user-agent': 'ATiempo/0.1 (trip planner prototype)' }, signal: AbortSignal.timeout(8000) });
     const text = await r.text();
     let body;
     try { body = JSON.parse(text); } catch { return send(res, 502, { error: 'TUA did not return JSON (it may be blocking this server)', status: r.status }); }
@@ -48,4 +48,4 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404); res.end('Not found');
   }
-}).listen(PORT, () => console.log(`Ovibus on http://localhost:${PORT}`));
+}).listen(PORT, () => console.log(`ATiempo on http://localhost:${PORT}`));
