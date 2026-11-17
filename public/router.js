@@ -1,4 +1,4 @@
-// ATiempo trip planner: a small RAPTOR router over the TUA timetable.
+// gOviedo trip planner: a small RAPTOR router over the TUA timetable.
 // Works in the browser and in Node (for tests). No dependencies.
 
 export const WALK_SPEED = 1.25; // m/s, about 4.5 km/h

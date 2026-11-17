@@ -1,4 +1,4 @@
-# ATiempo
+# gOviedo
 
 A small trip planner for Oviedo city buses (TUA). Type a destination and it gives you the
 whole trip: the walk to the stop, which bus to take, where to change, the walk at the end,

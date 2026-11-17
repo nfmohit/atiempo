@@ -33,7 +33,8 @@ function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); 
 
 // ---------- State ----------
 let net, stopMap = {};
-const userStopMap = storage('atiempo.stopMap', {});
+// Stop numbers typed in by the user (older versions of the app saved them as atiempo.stopMap).
+const userStopMap = storage('goviedo.stopMap', storage('atiempo.stopMap', {}));
 const state = { from: null, to: null, results: [], selected: -1 };
 
 // ---------- Map ----------
@@ -122,7 +123,7 @@ function stopNumberEditor(stop, onSaved) {
     const v = input.value.trim();
     if (v && !/^\d{1,6}$/.test(v)) { input.setCustomValidity('Numbers only'); input.reportValidity(); return; }
     if (v) userStopMap[stop.id] = v; else delete userStopMap[stop.id];
-    save('atiempo.stopMap', userStopMap);
+    save('goviedo.stopMap', userStopMap);
     onSaved?.();
     refreshLive();
   });
@@ -686,7 +687,7 @@ async function createMap() {
     LIVE_SOURCES = [cfg.liveRelay, staticHost ? null : 'api/estimaciones/', TUA_DIRECT].filter(Boolean);
     net = new Network(data);
     stopMap = sm;
-    window.atiempo = { net, state }; // handy for debugging
+    window.goviedo = { net, state }; // handy for debugging
     drawStops();
     status('');
     locate(false);

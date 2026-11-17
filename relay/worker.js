@@ -1,4 +1,4 @@
-// ATiempo live-times relay for Cloudflare Workers (free plan is plenty).
+// gOviedo live-times relay for Cloudflare Workers (free plan is plenty).
 // The browser can't read TUA's live API from another website (no CORS headers), so this
 // fetches it server-side and adds them. Only the estimaciones endpoint is relayed.
 //
@@ -25,7 +25,7 @@ export default {
     if (request.method !== 'GET' || !m) return json({ error: 'use /estimaciones/<stop number>' }, 404, cors);
 
     const cache = caches.default;
-    const key = new Request(`https://cache.atiempo/${m[1]}`);
+    const key = new Request(`https://cache.goviedo/${m[1]}`);
     const cached = await cache.match(key).then(r => r && r.json()).catch(() => null);
     const age = cached ? (Date.now() - cached.fetchedAt) / 1000 : Infinity;
     if (age < FRESH_SECONDS) return json(cached, 200, cors);
@@ -34,7 +34,7 @@ export default {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) await new Promise(r => setTimeout(r, 400));
       try {
-        const r = await fetch(TUA + m[1], { headers: { accept: 'application/json', 'user-agent': 'ATiempo/0.1 (trip planner; https://github.com/nfmohit/atiempo)' } });
+        const r = await fetch(TUA + m[1], { headers: { accept: 'application/json', 'user-agent': 'gOviedo/0.1 (trip planner; https://github.com/nfmohit/atiempo)' } });
         lastStatus = r.status;
         const body = JSON.parse(await r.text());
         body.fetchedAt = Date.now();
