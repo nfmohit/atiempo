@@ -1,4 +1,4 @@
-import { Network, parseEstimaciones, liveForLeg, directionCode, MIN_TRANSFER_S } from './router.js';
+import { Network, parseEstimaciones, liveForLeg, MIN_TRANSFER_S, haversine } from './router.js';
 
 // ---------- Config ----------
 const OVIEDO = [43.3614, -5.8494];
@@ -56,7 +56,8 @@ function setPlace(which, place, { fit = true } = {}) {
 }
 
 map.on('click', e => {
-  const which = state.to && !state.from ? 'from' : 'to';
+  const which = placePicking || (state.to && !state.from ? 'from' : 'to');
+  if (placePicking) closePlaceResults();
   setPlace(which, { lat: e.latlng.lat, lon: e.latlng.lng, label: 'Point on map' }, { fit: false });
   search();
 });
@@ -207,36 +208,123 @@ async function applyLive(it, now) {
   return result;
 }
 
-// ---------- Geocoding ----------
-let suggestTimer, suggestFor = null, suggestions = [];
-async function geocode(q) {
+// ---------- Place search ----------
+// Two open-source geocoders over OpenStreetMap: Photon (typo-tolerant, matches partial names)
+// and Nominatim (good at addresses). Results are merged, kept to the Oviedo area, and ranked by
+// how many of the typed words they match (allowing small typos), then by distance.
+const PHOTON = 'https://photon.komoot.io/api/';
+const AREA_KM = 30;
+const CATEGORY = {
+  butcher: 'Butcher', supermarket: 'Supermarket', convenience: 'Shop', bakery: 'Bakery', pharmacy: 'Pharmacy',
+  restaurant: 'Restaurant', cafe: 'Café', bar: 'Bar', fast_food: 'Fast food', hospital: 'Hospital', clinic: 'Clinic',
+  doctors: 'Doctor', school: 'School', university: 'University', college: 'College', bus_stop: 'Bus stop',
+  bus_station: 'Bus station', station: 'Station', hotel: 'Hotel', bank: 'Bank', post_office: 'Post office',
+  townhall: 'Town hall', park: 'Park', mall: 'Shopping centre', clothes: 'Clothes shop', hairdresser: 'Hairdresser',
+  place_of_worship: 'Place of worship', library: 'Library', museum: 'Museum', theatre: 'Theatre', cinema: 'Cinema',
+  sports_centre: 'Sports centre', stadium: 'Stadium', residential: 'Street', primary: 'Street', secondary: 'Street',
+  tertiary: 'Street', pedestrian: 'Street', house: 'Address', neighbourhood: 'Area', suburb: 'Area', quarter: 'Area',
+};
+const fold = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const words = s => fold(s).split(/[^a-z0-9]+/).filter(w => w.length > 1 && !['de', 'del', 'la', 'el', 'los', 'las', 'y', 'n'].includes(w));
+const categoryOf = v => CATEGORY[v] || (v ? v.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : '');
+
+function editDistanceAtMost1(a, b) {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1;
+}
+// Share of typed words found in the place (prefix or one typo), name words counting most.
+function matchScore(place, q) {
+  const qw = words(q);
+  if (!qw.length) return 0;
+  const nameW = words(place.label), restW = words(`${place.detail} ${place.category}`);
+  const hit = (w, list) => list.some(x => x.startsWith(w) || (w.length >= 4 && editDistanceAtMost1(w, x.slice(0, w.length + 1)) ) || (w.length >= 4 && editDistanceAtMost1(w, x)));
+  let sc = 0;
+  for (const w of qw) sc += hit(w, nameW) ? 1 : hit(w, restW) ? 0.6 : 0;
+  return sc / qw.length;
+}
+
+function centre() { return state.from || { lat: OVIEDO[0], lon: OVIEDO[1] }; }
+const kmFrom = (a, p) => haversine(a.lat, a.lon, p.lat, p.lon) / 1000;
+
+async function photon(q) {
+  const c = { lat: OVIEDO[0], lon: OVIEDO[1] };
+  const u = new URL(PHOTON);
+  u.search = new URLSearchParams({ q, limit: '25', lat: c.lat, lon: c.lon, zoom: '12', location_bias_scale: '0.1' });
+  // The public Photon server now and then answers with an empty body; one quick retry helps.
+  let json;
+  for (let attempt = 0; attempt < 2 && !json; attempt++) {
+    try { const r = await fetch(u); if (r.ok) json = await r.json(); } catch { /* retry */ }
+    if (!json && !attempt) await new Promise(res => setTimeout(res, 400));
+  }
+  if (!json) throw new Error('search failed');
+  return json.features.map(f => {
+    const p = f.properties, [lon, lat] = f.geometry.coordinates;
+    const street = [p.street, p.housenumber].filter(Boolean).join(' ');
+    return { lat, lon, label: p.name || street || p.city, category: categoryOf(p.osm_value), detail: [p.name ? street : '', p.district || p.locality, p.city].filter(Boolean).join(', ') };
+  });
+}
+
+async function nominatim(q) {
   const u = new URL(GEOCODER);
-  u.search = new URLSearchParams({ q, format: 'jsonv2', limit: '6', countrycodes: 'es', viewbox: '-5.98,43.43,-5.72,43.30', bounded: '1', 'accept-language': 'es,en' });
+  u.search = new URLSearchParams({ q, format: 'jsonv2', limit: '10', countrycodes: 'es', viewbox: '-6.10,43.50,-5.60,43.22', bounded: '1', 'accept-language': 'es,en' });
   const r = await fetch(u);
   if (!r.ok) throw new Error(`search failed (${r.status})`);
-  return (await r.json()).map(p => ({ lat: +p.lat, lon: +p.lon, label: p.name || p.display_name.split(',')[0], detail: p.display_name.split(',').slice(1, 4).join(',').trim() }));
+  return (await r.json()).map(p => ({ lat: +p.lat, lon: +p.lon, label: p.name || p.display_name.split(',')[0], category: categoryOf(p.type), detail: p.display_name.split(',').slice(1, 4).join(',').trim() }));
 }
 
 function localStopMatches(q) {
-  const n = q.toLowerCase();
   const seen = new Set();
-  return net.stops.filter(s => s.name.toLowerCase().includes(n) && !seen.has(s.name) && seen.add(s.name)).slice(0, 3)
-    .map(s => ({ lat: s.lat, lon: s.lon, label: s.name, detail: 'Bus stop' }));
+  return net.stops.filter(s => !seen.has(s.name) && seen.add(s.name))
+    .map(s => ({ lat: s.lat, lon: s.lon, label: s.name, category: 'Bus stop', detail: '' }))
+    .filter(p => matchScore(p, q) >= 0.99).slice(0, 3);
 }
 
-function showSuggestions(which, list) {
-  suggestFor = which; suggestions = list;
+const searchCache = new Map();
+async function searchPlaces(q) {
+  const key = fold(q);
+  if (searchCache.has(key)) return searchCache.get(key);
+  const lists = await Promise.allSettled([photon(q), nominatim(q)]);
+  if (lists.every(l => l.status === 'rejected')) throw lists[0].reason;
+  const all = [...lists.flatMap(l => l.status === 'fulfilled' ? l.value : []), ...localStopMatches(q)];
+  const c = { lat: OVIEDO[0], lon: OVIEDO[1] };
+  const out = [];
+  for (const p of all) {
+    if (!p.label || kmFrom(c, p) > AREA_KM) continue;
+    if (out.some(o => fold(o.label) === fold(p.label) && kmFrom(o, p) < 0.08)) continue;
+    p.score = matchScore(p, q);
+    out.push(p);
+  }
+  const ref = centre();
+  out.forEach(p => { p.km = kmFrom(ref, p); });
+  out.sort((a, b) => (b.score - a.score) || (a.km - b.km));
+  const result = out.filter(p => p.score > 0).slice(0, 20);
+  searchCache.set(key, result);
+  return result;
+}
+
+// Suggestions while typing.
+let suggestTimer, suggestFor = null, suggestions = [], lastQuery = '';
+function showSuggestions(which, list, q) {
+  suggestFor = which; suggestions = list.slice(0, 5);
   const ul = $('#suggest');
   ul.style.top = which === 'from' ? '48px' : '96px';
-  ul.innerHTML = list.map((p, i) => `<li role="option" data-i="${i}">${esc(p.label)}<small>${esc(p.detail || '')}</small></li>`).join('') || '<li aria-disabled="true">No matches in Oviedo</li>';
+  ul.innerHTML = suggestions.map((p, i) => `<li role="option" data-i="${i}">${esc(p.label)}<small>${esc([p.category, p.detail].filter(Boolean).join(' · '))}</small></li>`).join('')
+    + `<li role="option" data-all="1" class="see-all">See all results for “${esc(q)}”</li>`;
   ul.hidden = false;
 }
 $('#suggest').addEventListener('mousedown', e => {
-  const li = e.target.closest('li[data-i]');
+  const li = e.target.closest('li[data-i], li[data-all]');
   if (!li) return;
   e.preventDefault();
-  setPlace(suggestFor, suggestions[+li.dataset.i]);
   $('#suggest').hidden = true;
+  if (li.dataset.all) { showPlaceResults(suggestFor, lastQuery); return; }
+  setPlace(suggestFor, suggestions[+li.dataset.i]);
   search();
 });
 for (const which of ['from', 'to']) {
@@ -246,13 +334,58 @@ for (const which of ['from', 'to']) {
     const q = input.value.trim();
     if (q.length < 3) { $('#suggest').hidden = true; return; }
     suggestTimer = setTimeout(async () => {
-      const local = localStopMatches(q);
-      showSuggestions(which, local);
-      try { showSuggestions(which, [...(await geocode(q)), ...local]); } catch { /* keep local */ }
-    }, 350);
+      lastQuery = q;
+      try { const list = await searchPlaces(q); if (lastQuery === q && !placePicking && document.activeElement === input) showSuggestions(which, list, q); } catch { /* offline: keep typing */ }
+    }, 300);
   });
   input.addEventListener('blur', () => setTimeout(() => { $('#suggest').hidden = true; }, 150));
-  input.addEventListener('keydown', e => { if (e.key === 'Enter' && suggestFor === which && suggestions[0]) { e.preventDefault(); setPlace(which, suggestions[0]); $('#suggest').hidden = true; search(); } });
+  // Enter opens the full results screen.
+  input.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const q = input.value.trim();
+    if (q.length < 2) return;
+    clearTimeout(suggestTimer);
+    $('#suggest').hidden = true;
+    input.blur();
+    showPlaceResults(which, q);
+  });
+}
+
+// Full results screen: a list in the panel and numbered pins on the map.
+const placeLayer = L.layerGroup().addTo(map);
+let placePicking = null;
+async function showPlaceResults(which, q) {
+  placePicking = which;
+  lastQuery = q;
+  const box = $('#places');
+  $('#results').hidden = true; $('#detail').hidden = true; status('');
+  box.hidden = false;
+  box.innerHTML = `<button class="back" type="button">‹ Back</button><h2 class="places-title">Results for “${esc(q)}”</h2><p class="sched">Searching…</p>`;
+  box.querySelector('.back').addEventListener('click', closePlaceResults);
+  setPanel('expanded');
+  let list;
+  try { list = await searchPlaces(q); } catch (e) { box.querySelector('p').textContent = `Search is unavailable right now (${e.message}).`; return; }
+  if (placePicking !== which || lastQuery !== q) return;
+  placeLayer.clearLayers();
+  const help = '<p class="sched places-help">Can\'t find it? Tap the map where it is. Small shops are sometimes missing from OpenStreetMap, the open map this app uses.</p>';
+  if (!list.length) { box.querySelector('p').outerHTML = `<p>No places match “${esc(q)}” around Oviedo.</p>${help}`; return; }
+  box.querySelector('p').outerHTML = `<ol class="places-list">${list.map((p, i) => `<li data-i="${i}"><span class="num">${i + 1}</span><div><strong>${esc(p.label)}</strong><div class="sub">${esc([p.category, p.detail].filter(Boolean).join(' · '))}</div></div><span class="km">${p.km < 1 ? `${Math.round(p.km * 1000 / 10) * 10} m` : `${p.km.toFixed(1)} km`}</span></li>`).join('')}</ol>${help}`;
+  const pick = i => { setPlace(which, list[i]); closePlaceResults(); search(); };
+  box.querySelectorAll('.places-list li').forEach(li => li.addEventListener('click', () => pick(+li.dataset.i)));
+  const b = L.latLngBounds([]);
+  list.forEach((p, i) => {
+    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: '', html: `<div class="numpin">${i + 1}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
+      .bindTooltip(p.label).on('click', () => pick(i)).addTo(placeLayer);
+    b.extend([p.lat, p.lon]);
+  });
+  map.fitBounds(b.pad(0.2), { maxZoom: 16 });
+}
+function closePlaceResults() {
+  placePicking = null;
+  placeLayer.clearLayers();
+  $('#places').hidden = true;
+  $('#results').hidden = false;
 }
 
 // ---------- Location ----------

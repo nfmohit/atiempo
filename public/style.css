@@ -88,6 +88,18 @@ select, .row input { font: inherit; color: var(--fg); background: var(--card); b
 .stopno { font-size: 12px; margin-top: 4px; }
 .stopno input { width: 80px; font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
 .stopno button, .btn { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg); cursor: pointer; }
+.suggest li.see-all { color: var(--accent); font-weight: 600; }
+.places .back { background: none; border: none; color: var(--accent); font: inherit; padding: 4px 0 6px; cursor: pointer; }
+.places-title { font-size: 16px; margin: 0 0 8px; }
+.places-list { list-style: none; padding: 0; margin: 0; }
+.places-list li { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: start; padding: 10px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.places-list li:hover { background: var(--card); }
+.places-list .num, .numpin { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #dc2626; color: #fff; font-size: 12px; font-weight: 700; }
+.numpin { border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.places-list .sub { color: var(--muted); font-size: 13px; }
+.places-list .km { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.places-help { font-size: 13px; margin-top: 10px; }
+input[type="search"]::-webkit-search-cancel-button { cursor: pointer; }
 .foot { color: var(--muted); font-size: 12px; margin-top: 14px; }
 
 .leaflet-popup-content { font: 14px/1.4 system-ui, sans-serif; }
