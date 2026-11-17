@@ -2,8 +2,11 @@ import { Network, parseEstimaciones, liveForLeg, directionCode, MIN_TRANSFER_S }
 
 // ---------- Config ----------
 const OVIEDO = [43.3614, -5.8494];
-// Live arrivals: our own server relays TUA first; if that fails we try TUA directly from the browser.
-const LIVE_SOURCES = ['api/estimaciones/', 'https://www.tua.es/rest/estimaciones/'];
+// Live arrivals. TUA's API can't be read from another website directly (no CORS), so we go
+// through a relay: the configured one (config.json, e.g. a Cloudflare Worker), or our own
+// server.js when it serves the app. Calling TUA directly stays as a last try.
+const TUA_DIRECT = 'https://www.tua.es/rest/estimaciones/';
+let LIVE_SOURCES = ['api/estimaciones/', TUA_DIRECT];
 const GEOCODER = 'https://nominatim.openstreetmap.org/search';
 const FOOT_ROUTER = 'https://routing.openstreetmap.de/routed-foot/route/v1/foot/';
 const LINE_COLORS = { A: '#1d4ed8', B: '#b91c1c', C: '#15803d', D: '#7c3aed', E: '#c2410c', F: '#0e7490', G: '#a16207', H: '#be185d', J: '#4d7c0f', K: '#0369a1', L: '#9333ea', M: '#0f766e', O: '#b45309', U: '#475569', V: '#e11d48', BUH: '#111827' };
@@ -475,10 +478,14 @@ $('#grip').addEventListener('click', () => setPanel($('#panel').classList.contai
 (async function boot() {
   status('Loading timetable…');
   try {
-    const [data, sm] = await Promise.all([
+    const [data, sm, cfg] = await Promise.all([
       fetch('data/tua.json').then(r => r.json()),
       fetch('data/stop-map.json').then(r => r.ok ? r.json() : {}).catch(() => ({})),
+      fetch('config.json').then(r => r.ok ? r.json() : {}).catch(() => ({})),
     ]);
+    // On static hosting (GitHub Pages) there is no server.js, so skip its relay address.
+    const staticHost = location.hostname.endsWith('github.io');
+    LIVE_SOURCES = [cfg.liveRelay, staticHost ? null : 'api/estimaciones/', TUA_DIRECT].filter(Boolean);
     net = new Network(data);
     stopMap = sm;
     window.atiempo = { net, state }; // handy for debugging

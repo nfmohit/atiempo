@@ -40,7 +40,9 @@ It works in a phone browser (and can be added to the home screen). No app store 
 ## Use it
 
 Online: https://nfmohit.github.io/atiempo/ (published from `public/` by GitHub Actions on every push to `main`).
-On GitHub Pages there is no relay server, so live times come straight from TUA in your browser.
+TUA's live API can't be read directly from another website (no CORS headers), so on GitHub Pages
+live times go through a small relay: see `relay/README.md` (free Cloudflare Worker), then set
+`liveRelay` in `public/config.json`.
 
 ## Run it locally
 
