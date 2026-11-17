@@ -2,6 +2,11 @@
 // the app doesn't care which one is showing. Google is used when config.json has a key, because
 // Google's terms require places found with Google Places to be shown on a Google map.
 
+// The panel covers part of the map (bottom sheet on phones, left column on desktop). The app
+// tells us how much, so fitted routes land in the visible part.
+let obstruction = () => ({ top: 0, right: 0, bottom: 0, left: 0 });
+export function setObstruction(fn) { obstruction = fn; }
+
 const pinHtml = cls => `<div class="pin ${cls}"></div>`;
 const numHtml = n => `<div class="numpin">${n}</div>`;
 const dotEl = ({ radius = 5, color, fill = '#fff', weight = 2 }) => {
@@ -31,7 +36,11 @@ export async function leafletMap(el, center, zoom) {
   return {
     kind: 'leaflet',
     setView: (ll, z) => map.setView(ll, z),
-    fitPoints(points, { pad = 0.2, maxZoom = 18 } = {}) { if (points.length) map.fitBounds(L.latLngBounds(points).pad(pad), { maxZoom }); },
+    fitPoints(points, { pad = 0.2, maxZoom = 18 } = {}) {
+      if (!points.length) return;
+      const o = obstruction();
+      map.fitBounds(L.latLngBounds(points).pad(pad), { maxZoom, paddingTopLeft: [o.left + 24, o.top + 24], paddingBottomRight: [o.right + 24, o.bottom + 24] });
+    },
     getZoom: () => map.getZoom(),
     onZoom: cb => map.on('zoomend', () => cb(map.getZoom())),
     onClick: cb => map.on('click', e => cb({ lat: e.latlng.lat, lon: e.latlng.lng })),
@@ -78,7 +87,8 @@ function loadGoogle(key) {
 
 export async function googleMap(el, center, zoom, { key, mapId }) {
   await loadGoogle(key);
-  const { Map, InfoWindow, Polyline, LatLngBounds } = await google.maps.importLibrary('maps');
+  const { Map, InfoWindow, Polyline } = await google.maps.importLibrary('maps');
+  const { LatLngBounds } = await google.maps.importLibrary('core');
   const { AdvancedMarkerElement } = await google.maps.importLibrary('marker');
   const map = new Map(el, {
     center: { lat: center[0], lng: center[1] }, zoom, mapId: mapId || 'DEMO_MAP_ID',
@@ -100,7 +110,8 @@ export async function googleMap(el, center, zoom, { key, mapId }) {
       if (!points.length) return;
       const b = new LatLngBounds();
       points.forEach(p => b.extend(ll(p[0], p[1])));
-      map.fitBounds(b, 48);
+      const o = obstruction();
+      map.fitBounds(b, { top: o.top + 40, right: o.right + 40, bottom: o.bottom + 40, left: o.left + 40 });
       if (points.length === 1) map.setZoom(Math.min(maxZoom, 16));
       google.maps.event.addListenerOnce(map, 'idle', () => { if (map.getZoom() > maxZoom) map.setZoom(maxZoom); });
     },
@@ -123,11 +134,11 @@ export async function googleMap(el, center, zoom, { key, mapId }) {
         numPin(lat, lon, { n, title, onClick }) {
           const content = document.createElement('div'); content.innerHTML = numHtml(n);
           const m = add(new AdvancedMarkerElement({ map, position: ll(lat, lon), content: content.firstChild, title, gmpClickable: true, zIndex: 900 }));
-          m.addListener('gmp-click', onClick);
+          m.addEventListener('gmp-click', onClick);
         },
         dot(lat, lon, opts) {
           const m = add(new AdvancedMarkerElement({ map, position: ll(lat, lon), content: dotEl(opts), title: opts.title || '', gmpClickable: !!opts.popup }));
-          if (opts.popup) m.addListener('gmp-click', () => { info.setContent(opts.popup()); info.open({ map, anchor: m }); });
+          if (opts.popup) m.addEventListener('gmp-click', () => { info.setContent(opts.popup()); info.open({ map, anchor: m }); });
         },
         line(coords, { color, weight = 4, opacity = 0.9, dashed = false }) {
           const path = coords.map(c => ll(c[0], c[1]));

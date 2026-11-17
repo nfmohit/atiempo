@@ -1,5 +1,5 @@
 import { Network, parseEstimaciones, liveForLeg, MIN_TRANSFER_S, haversine } from './router.js';
-import { leafletMap, googleMap } from './mapview.js';
+import { leafletMap, googleMap, setObstruction } from './mapview.js';
 
 // ---------- Config ----------
 const OVIEDO = [43.3614, -5.8494];
@@ -18,7 +18,7 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const hhmm = s => { s = Math.round(s); const d = ((s % 86400) + 86400) % 86400; return `${String(Math.floor(d / 3600)).padStart(2, '0')}:${String(Math.floor(d / 60) % 60).padStart(2, '0')}`; };
 const mins = s => Math.max(0, Math.round(s / 60));
-const dist = m => m < 1000 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`;
+const dist = m => m < 995 ? `${Math.round(m / 10) * 10} m` : `${(m / 1000).toFixed(1)} km`;
 
 // Current date and time in Oviedo, whatever the phone's time zone.
 function madridNow() {
@@ -45,6 +45,10 @@ const useGoogle = () => mv?.kind === 'google';
 
 function initMap(view) {
   mv = view;
+  setObstruction(() => {
+    const r = $('#panel').getBoundingClientRect();
+    return innerWidth >= 800 ? { top: 0, right: 0, bottom: 0, left: r.right } : { top: 0, right: 0, bottom: innerHeight - r.top, left: 0 };
+  });
   routeLayer = mv.layer();
   stopLayer = mv.layer();
   stopLayer.show(false);
@@ -305,7 +309,8 @@ async function googlePlaceById(id) {
 async function googleSuggest(q) {
   const { AutocompleteSuggestion, AutocompleteSessionToken } = await places();
   gSession ||= new AutocompleteSessionToken();
-  const { suggestions: list } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({ input: q, locationBias: GOOGLE_BIAS(), includedRegionCodes: ['es'], language: 'es', sessionToken: gSession });
+  // Restrict suggestions to central Asturias, otherwise Google happily suggests places in Granada.
+  const { suggestions: list } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({ input: q, locationRestriction: { west: -6.15, north: 43.60, east: -5.45, south: 43.15 }, origin: { lat: centre().lat, lng: centre().lon }, includedRegionCodes: ['es'], language: 'es', sessionToken: gSession });
   return list.filter(x => x.placePrediction).map(x => {
     const pp = x.placePrediction;
     return {
@@ -389,7 +394,7 @@ for (const which of ['from', 'to']) {
     if (q.length < 3) { $('#suggest').hidden = true; return; }
     suggestTimer = setTimeout(async () => {
       lastQuery = q;
-      try { const list = await suggestPlaces(q); if (lastQuery === q && !placePicking && document.activeElement === input) showSuggestions(which, list, q); } catch { /* offline: keep typing */ }
+      try { const list = await suggestPlaces(q); if (lastQuery === q && !placePicking && document.activeElement === input) showSuggestions(which, list, q); } catch (err) { console.warn('suggestions failed', err); }
     }, 300);
   });
   input.addEventListener('blur', () => setTimeout(() => { $('#suggest').hidden = true; }, 150));
@@ -425,7 +430,7 @@ async function showPlaceResults(which, q) {
     ? '<p class="sched places-help">Can\'t find it? Tap the place on the map. <span class="powered">Results by Google</span></p>'
     : '<p class="sched places-help">Can\'t find it? Tap the map where it is. Small shops are sometimes missing from OpenStreetMap, the open map this app uses.</p>';
   if (!list.length) { box.querySelector('p').outerHTML = `<p>No places match “${esc(q)}” around Oviedo.</p>${help}`; return; }
-  box.querySelector('p').outerHTML = `<ol class="places-list">${list.map((p, i) => `<li data-i="${i}"><span class="num">${i + 1}</span><div><strong>${esc(p.label)}</strong><div class="sub">${esc([p.category, p.detail].filter(Boolean).join(' · '))}</div></div><span class="km">${p.km < 1 ? `${Math.round(p.km * 1000 / 10) * 10} m` : `${p.km.toFixed(1)} km`}</span></li>`).join('')}</ol>${help}`;
+  box.querySelector('p').outerHTML = `<ol class="places-list">${list.map((p, i) => `<li data-i="${i}"><span class="num">${i + 1}</span><div><strong>${esc(p.label)}</strong><div class="sub">${esc([p.category, p.detail].filter(Boolean).join(' · '))}</div></div><span class="km">${dist(p.km * 1000)}</span></li>`).join('')}</ol>${help}`;
   const pick = i => { setPlace(which, list[i]); closePlaceResults(); search(); };
   box.querySelectorAll('.places-list li').forEach(li => li.addEventListener('click', () => pick(+li.dataset.i)));
   list.forEach((p, i) => placeLayer.numPin(p.lat, p.lon, { n: i + 1, title: p.label, onClick: () => pick(i) }));
