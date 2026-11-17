@@ -34,7 +34,7 @@ export default {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) await new Promise(r => setTimeout(r, 400));
       try {
-        const r = await fetch(TUA + m[1], { headers: { accept: 'application/json', 'user-agent': 'gOviedo/0.1 (trip planner; https://github.com/nfmohit/atiempo)' } });
+        const r = await fetch(TUA + m[1], { headers: { accept: 'application/json', 'user-agent': 'gOviedo/0.1 (trip planner; https://github.com/nfmohit/goviedo)' } });
         lastStatus = r.status;
         const body = JSON.parse(await r.text());
         body.fetchedAt = Date.now();
