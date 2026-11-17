@@ -1,4 +1,5 @@
 import { Network, parseEstimaciones, liveForLeg, MIN_TRANSFER_S, haversine } from './router.js';
+import { leafletMap, googleMap } from './mapview.js';
 
 // ---------- Config ----------
 const OVIEDO = [43.3614, -5.8494];
@@ -36,42 +37,43 @@ const userStopMap = storage('atiempo.stopMap', {});
 const state = { from: null, to: null, results: [], selected: -1 };
 
 // ---------- Map ----------
-const map = L.map('map', { zoomControl: false }).setView(OVIEDO, 14);
-L.control.zoom({ position: 'topright' }).addTo(map);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-const routeLayer = L.layerGroup().addTo(map);
-const stopLayer = L.layerGroup();
-const pinIcon = cls => L.divIcon({ className: '', html: `<div class="pin ${cls}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9] });
-let fromMarker = null, toMarker = null;
+// Created at boot (see the end of this file): Google Maps when a key is configured, else Leaflet.
+let mv, routeLayer, stopLayer, placeLayer, pinLayers;
+let cfg = {};
+const useGoogle = () => mv?.kind === 'google';
+
+function initMap(view) {
+  mv = view;
+  routeLayer = mv.layer();
+  stopLayer = mv.layer();
+  stopLayer.show(false);
+  placeLayer = mv.layer();
+  pinLayers = { from: mv.layer(), to: mv.layer() };
+  mv.onClick(async ({ lat, lon, placeId }) => {
+    const which = placePicking || (state.to && !state.from ? 'from' : 'to');
+    if (placePicking) closePlaceResults();
+    let place = { lat, lon, label: 'Point on map' };
+    if (placeId && useGoogle()) place = await googlePlaceById(placeId).catch(() => place);
+    setPlace(which, place, { fit: false });
+    search();
+  });
+  mv.onZoom(z => stopLayer.show(z >= 16));
+}
 
 function setPlace(which, place, { fit = true } = {}) {
   state[which] = place;
   $(`#${which}`).value = place ? place.label : '';
-  const m = which === 'from' ? fromMarker : toMarker;
-  if (m) map.removeLayer(m);
-  const nm = place ? L.marker([place.lat, place.lon], { icon: pinIcon(which), draggable: true }).addTo(map) : null;
-  if (nm) nm.on('dragend', e => { const ll = e.target.getLatLng(); setPlace(which, { lat: ll.lat, lon: ll.lng, label: 'Dropped pin' }, { fit: false }); search(); });
-  if (which === 'from') fromMarker = nm; else toMarker = nm;
-  if (fit && state.from && state.to) map.fitBounds(L.latLngBounds([[state.from.lat, state.from.lon], [state.to.lat, state.to.lon]]).pad(0.3));
+  pinLayers[which].clear();
+  if (place) pinLayers[which].pin(place.lat, place.lon, { kind: which, draggable: true, onDragEnd: (lat, lon) => { setPlace(which, { lat, lon, label: 'Dropped pin' }, { fit: false }); search(); } });
+  if (fit && state.from && state.to) mv.fitPoints([[state.from.lat, state.from.lon], [state.to.lat, state.to.lon]], { pad: 0.3 });
 }
-
-map.on('click', e => {
-  const which = placePicking || (state.to && !state.from ? 'from' : 'to');
-  if (placePicking) closePlaceResults();
-  setPlace(which, { lat: e.latlng.lat, lon: e.latlng.lng, label: 'Point on map' }, { fit: false });
-  search();
-});
 
 // Bus stops appear when zoomed in; tap one for live arrivals.
 function drawStops() {
-  stopLayer.clearLayers();
-  for (const s of net.stops) {
-    L.circleMarker([s.lat, s.lon], { radius: 5, color: '#0b5c4b', weight: 2, fillColor: '#fff', fillOpacity: 1 })
-      .bindPopup(() => stopPopup(s), { maxWidth: 260 })
-      .addTo(stopLayer);
-  }
+  stopLayer.clear();
+  for (const s of net.stops) stopLayer.dot(s.lat, s.lon, { radius: 5, color: '#0b5c4b', weight: 2, title: s.name, popup: () => stopPopup(s) });
+  stopLayer.show(mv.getZoom() >= 16);
 }
-map.on('zoomend', () => { if (map.getZoom() >= 16) stopLayer.addTo(map); else map.removeLayer(stopLayer); });
 
 function stopPopup(stop) {
   const el = document.createElement('div');
@@ -81,7 +83,7 @@ function stopPopup(stop) {
   const tuaId = tuaStopIds(stop);
   if (!tuaId.length) {
     body.innerHTML = '';
-    body.appendChild(stopNumberEditor(stop, () => map.closePopup()));
+    body.appendChild(stopNumberEditor(stop, () => mv.closePopup()));
     return el;
   }
   fetchLiveMany(tuaId).then(arr => {
@@ -285,6 +287,56 @@ function localStopMatches(q) {
     .filter(p => matchScore(p, q) >= 0.99).slice(0, 3);
 }
 
+// --- Google Places (used when the app runs on a Google map; see config.json) ---
+const GOOGLE_BIAS = () => ({ center: { lat: OVIEDO[0], lng: OVIEDO[1] }, radius: 20000 });
+let placesLib = null, gSession = null;
+async function places() { return placesLib ||= await google.maps.importLibrary('places'); }
+const gLoc = l => ({ lat: typeof l.lat === 'function' ? l.lat() : l.lat, lon: typeof l.lng === 'function' ? l.lng() : l.lng });
+function fromGooglePlace(pl) {
+  return { ...gLoc(pl.location), label: pl.displayName || pl.formattedAddress, category: pl.primaryTypeDisplayName || '', detail: (pl.formattedAddress || '').replace(/, España$/, ''), google: true };
+}
+async function googlePlaceById(id) {
+  const { Place } = await places();
+  const pl = new Place({ id });
+  await pl.fetchFields({ fields: ['displayName', 'location', 'formattedAddress', 'primaryTypeDisplayName'] });
+  return fromGooglePlace(pl);
+}
+async function googleSuggest(q) {
+  const { AutocompleteSuggestion, AutocompleteSessionToken } = await places();
+  gSession ||= new AutocompleteSessionToken();
+  const { suggestions: list } = await AutocompleteSuggestion.fetchAutocompleteSuggestions({ input: q, locationBias: GOOGLE_BIAS(), includedRegionCodes: ['es'], language: 'es', sessionToken: gSession });
+  return list.filter(x => x.placePrediction).map(x => {
+    const pp = x.placePrediction;
+    return {
+      label: pp.mainText?.text || pp.text.text, detail: pp.secondaryText?.text || '', category: '', google: true,
+      // Details are fetched only for the suggestion that's picked, which ends the billing session.
+      resolve: async () => {
+        const pl = pp.toPlace();
+        await pl.fetchFields({ fields: ['displayName', 'location', 'formattedAddress', 'primaryTypeDisplayName'] });
+        gSession = null;
+        return fromGooglePlace(pl);
+      },
+    };
+  });
+}
+async function googleTextSearch(q) {
+  const { Place } = await places();
+  const { places: list } = await Place.searchByText({ textQuery: q, fields: ['displayName', 'location', 'formattedAddress', 'primaryTypeDisplayName'], locationBias: GOOGLE_BIAS(), maxResultCount: 20, language: 'es', region: 'es' });
+  const ref = centre();
+  return list.map(fromGooglePlace).map(p => ({ ...p, km: kmFrom(ref, p) }));
+}
+
+// Typeahead and full search pick the right provider.
+async function suggestPlaces(q) {
+  if (!useGoogle()) return searchPlaces(q);
+  const [g, stops] = [await googleSuggest(q), localStopMatches(q)];
+  return [...g.slice(0, 4), ...stops.slice(0, 1)];
+}
+async function fullSearch(q) {
+  if (!useGoogle()) return searchPlaces(q);
+  return googleTextSearch(q);
+}
+
 const searchCache = new Map();
 async function searchPlaces(q) {
   const key = fold(q);
@@ -324,8 +376,9 @@ $('#suggest').addEventListener('mousedown', e => {
   e.preventDefault();
   $('#suggest').hidden = true;
   if (li.dataset.all) { showPlaceResults(suggestFor, lastQuery); return; }
-  setPlace(suggestFor, suggestions[+li.dataset.i]);
-  search();
+  const which = suggestFor, pick = suggestions[+li.dataset.i];
+  (pick.resolve ? pick.resolve() : Promise.resolve(pick)).then(place => { setPlace(which, place); search(); })
+    .catch(err => status(`Could not open that place: ${err.message}`, true));
 });
 for (const which of ['from', 'to']) {
   const input = $(`#${which}`);
@@ -335,7 +388,7 @@ for (const which of ['from', 'to']) {
     if (q.length < 3) { $('#suggest').hidden = true; return; }
     suggestTimer = setTimeout(async () => {
       lastQuery = q;
-      try { const list = await searchPlaces(q); if (lastQuery === q && !placePicking && document.activeElement === input) showSuggestions(which, list, q); } catch { /* offline: keep typing */ }
+      try { const list = await suggestPlaces(q); if (lastQuery === q && !placePicking && document.activeElement === input) showSuggestions(which, list, q); } catch { /* offline: keep typing */ }
     }, 300);
   });
   input.addEventListener('blur', () => setTimeout(() => { $('#suggest').hidden = true; }, 150));
@@ -353,7 +406,6 @@ for (const which of ['from', 'to']) {
 }
 
 // Full results screen: a list in the panel and numbered pins on the map.
-const placeLayer = L.layerGroup().addTo(map);
 let placePicking = null;
 async function showPlaceResults(which, q) {
   placePicking = which;
@@ -365,25 +417,22 @@ async function showPlaceResults(which, q) {
   box.querySelector('.back').addEventListener('click', closePlaceResults);
   setPanel('expanded');
   let list;
-  try { list = await searchPlaces(q); } catch (e) { box.querySelector('p').textContent = `Search is unavailable right now (${e.message}).`; return; }
+  try { list = await fullSearch(q); } catch (e) { box.querySelector('p').textContent = `Search is unavailable right now (${e.message}).`; return; }
   if (placePicking !== which || lastQuery !== q) return;
-  placeLayer.clearLayers();
-  const help = '<p class="sched places-help">Can\'t find it? Tap the map where it is. Small shops are sometimes missing from OpenStreetMap, the open map this app uses.</p>';
+  placeLayer.clear();
+  const help = useGoogle()
+    ? '<p class="sched places-help">Can\'t find it? Tap the place on the map. <span class="powered">Results by Google</span></p>'
+    : '<p class="sched places-help">Can\'t find it? Tap the map where it is. Small shops are sometimes missing from OpenStreetMap, the open map this app uses.</p>';
   if (!list.length) { box.querySelector('p').outerHTML = `<p>No places match “${esc(q)}” around Oviedo.</p>${help}`; return; }
   box.querySelector('p').outerHTML = `<ol class="places-list">${list.map((p, i) => `<li data-i="${i}"><span class="num">${i + 1}</span><div><strong>${esc(p.label)}</strong><div class="sub">${esc([p.category, p.detail].filter(Boolean).join(' · '))}</div></div><span class="km">${p.km < 1 ? `${Math.round(p.km * 1000 / 10) * 10} m` : `${p.km.toFixed(1)} km`}</span></li>`).join('')}</ol>${help}`;
   const pick = i => { setPlace(which, list[i]); closePlaceResults(); search(); };
   box.querySelectorAll('.places-list li').forEach(li => li.addEventListener('click', () => pick(+li.dataset.i)));
-  const b = L.latLngBounds([]);
-  list.forEach((p, i) => {
-    L.marker([p.lat, p.lon], { icon: L.divIcon({ className: '', html: `<div class="numpin">${i + 1}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] }) })
-      .bindTooltip(p.label).on('click', () => pick(i)).addTo(placeLayer);
-    b.extend([p.lat, p.lon]);
-  });
-  map.fitBounds(b.pad(0.2), { maxZoom: 16 });
+  list.forEach((p, i) => placeLayer.numPin(p.lat, p.lon, { n: i + 1, title: p.label, onClick: () => pick(i) }));
+  mv.fitPoints(list.map(p => [p.lat, p.lon]), { pad: 0.2, maxZoom: 16 });
 }
 function closePlaceResults() {
   placePicking = null;
-  placeLayer.clearLayers();
+  placeLayer.clear();
   $('#places').hidden = true;
   $('#results').hidden = false;
 }
@@ -394,7 +443,7 @@ function locate(thenSearch = true) {
   status('Finding you…');
   navigator.geolocation.getCurrentPosition(pos => {
     setPlace('from', { lat: pos.coords.latitude, lon: pos.coords.longitude, label: 'My location' }, { fit: !!state.to });
-    if (!state.to) map.setView([pos.coords.latitude, pos.coords.longitude], 15);
+    if (!state.to) mv.setView([pos.coords.latitude, pos.coords.longitude], 15);
     status('');
     if (thenSearch) search();
   }, () => status('Could not get your location. Type a starting point or tap the map.', true), { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
@@ -427,7 +476,7 @@ async function search() {
   if (!state.to) return;
   if (!state.from) { locate(true); return; }
   $('#detail').hidden = true; $('#results').hidden = false;
-  routeLayer.clearLayers();
+  routeLayer.clear();
   const when = departureTime();
   if (!net.services[when.date]) {
     status('The timetable data does not cover that date yet. Try another day, or update the data.', true);
@@ -538,8 +587,8 @@ function nameOf(end, which) { return end.place ? (which === 'from' ? state.from.
 async function renderDetail(i) {
   const { it, live } = state.results[i];
   renderResults();
-  routeLayer.clearLayers();
-  const bounds = L.latLngBounds([]);
+  routeLayer.clear();
+  const bounds = [];
   const box = $('#detail');
   $('#results').hidden = true;
   box.hidden = false;
@@ -568,7 +617,7 @@ async function renderDetail(i) {
   html.push(`<li class="step"><span class="t">${hhmm(live?.arrive ?? it.arrive)}</span><div class="what">📍 Arrive at <strong>${esc(state.to.label)}</strong></div></li></ol>`);
   if (live && !live.ok) html.push(`<div class="warn">${esc(live.notes.join(' '))}</div>`);
   box.innerHTML = html.join('');
-  box.querySelector('.back').addEventListener('click', () => { box.hidden = true; $('#results').hidden = false; state.selected = -1; routeLayer.clearLayers(); renderResults(); });
+  box.querySelector('.back').addEventListener('click', () => { box.hidden = true; $('#results').hidden = false; state.selected = -1; routeLayer.clear(); renderResults(); });
   // Stop-number editors for boarding stops without a TUA number.
   box.querySelectorAll('[data-stopno]').forEach(el => {
     const stop = net.stops[+el.dataset.stopno];
@@ -582,17 +631,17 @@ async function renderDetail(i) {
       const p = net.patterns[leg.pattern];
       const a = net.stops[leg.from.stop], b = net.stops[leg.to.stop];
       const coords = sliceShape(p.shape, a, b) || p.stops.slice(leg.boardPos, leg.alightPos + 1).map(s => [net.stops[s].lat, net.stops[s].lon]);
-      L.polyline(coords, { color: lineColor(leg.line), weight: 6, opacity: 0.9 }).addTo(routeLayer);
-      for (const s of [a, b]) L.circleMarker([s.lat, s.lon], { radius: 6, color: lineColor(leg.line), fillColor: '#fff', fillOpacity: 1, weight: 3 }).bindTooltip(s.name).addTo(routeLayer);
-      coords.forEach(c => bounds.extend(c));
+      routeLayer.line(coords, { color: lineColor(leg.line), weight: 6, opacity: 0.9 });
+      for (const s of [a, b]) routeLayer.dot(s.lat, s.lon, { radius: 6, color: lineColor(leg.line), weight: 3, title: s.name });
+      bounds.push(...coords);
     }
   }
-  map.fitBounds(bounds.extend([state.from.lat, state.from.lon]).extend([state.to.lat, state.to.lon]).pad(0.15));
+  mv.fitPoints([...bounds, [state.from.lat, state.from.lon], [state.to.lat, state.to.lon]], { pad: 0.15 });
   for (const [j, leg] of it.legs.entries()) {
     if (leg.type !== 'walk') continue;
     const w = await walkRoute(pointOf(leg.from), pointOf(leg.to));
     if (state.selected !== i) return;
-    L.polyline(w.coords, { color: '#2563eb', weight: 4, dashArray: '2 8', lineCap: 'round' }).addTo(routeLayer);
+    routeLayer.line(w.coords, { color: '#2563eb', weight: 4, dashed: true });
     const det = box.querySelector(`[data-walk="${j}"] ol`);
     if (det) det.innerHTML = w.steps.length ? w.steps.map(s => `<li>${esc(s)}</li>`).join('') : '<li>Walk directions unavailable; the dotted line shows the general direction.</li>';
   }
@@ -611,14 +660,27 @@ function setPanel(mode) { const p = $('#panel'); p.classList.toggle('collapsed',
 $('#grip').addEventListener('click', () => setPanel($('#panel').classList.contains('collapsed') ? 'expanded' : 'collapsed'));
 
 // ---------- Boot ----------
+async function createMap() {
+  if (cfg.googleMapsKey) {
+    try {
+      const view = await googleMap($('#map'), OVIEDO, 14, { key: cfg.googleMapsKey, mapId: cfg.googleMapId });
+      $('#mapcredit').textContent = 'Map and places: Google.';
+      return view;
+    } catch (e) { console.warn('Google Maps unavailable, using OpenStreetMap', e); }
+  }
+  return leafletMap($('#map'), OVIEDO, 14);
+}
+
 (async function boot() {
   status('Loading timetable…');
   try {
-    const [data, sm, cfg] = await Promise.all([
+    const [data, sm, conf] = await Promise.all([
       fetch('data/tua.json').then(r => r.json()),
       fetch('data/stop-map.json').then(r => r.ok ? r.json() : {}).catch(() => ({})),
       fetch('config.json').then(r => r.ok ? r.json() : {}).catch(() => ({})),
     ]);
+    cfg = conf;
+    initMap(await createMap());
     // On static hosting (GitHub Pages) there is no server.js, so skip its relay address.
     const staticHost = location.hostname.endsWith('github.io');
     LIVE_SOURCES = [cfg.liveRelay, staticHost ? null : 'api/estimaciones/', TUA_DIRECT].filter(Boolean);

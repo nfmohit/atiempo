@@ -1,1 +1,5 @@
-{ "liveRelay": "https://atiempo-relay.nfmohit.workers.dev/estimaciones/" }
+{
+  "liveRelay": "https://atiempo-relay.nfmohit.workers.dev/estimaciones/",
+  "googleMapsKey": "",
+  "googleMapId": ""
+}

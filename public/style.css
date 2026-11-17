@@ -105,6 +105,8 @@ input[type="search"]::-webkit-search-cancel-button { cursor: pointer; }
 .leaflet-popup-content { font: 14px/1.4 system-ui, sans-serif; }
 .popup-live { margin: 6px 0 0; padding: 0; list-style: none; }
 .popup-live li { padding: 2px 0; }
+.mapdot { border-radius: 50%; box-sizing: border-box; transform: translate(0, 50%); }
+.powered { display: block; margin-top: 6px; font-size: 12px; }
 .pin { width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
 .pin.from { background: #2563eb; }
 .pin.to { background: #dc2626; }
